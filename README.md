@@ -142,3 +142,204 @@ You should see:
 </pre>
 
 ___Don't forget to remove the print statement.___
+
+## POSTGRES
+
+We added `Flask-SQLAlchemy` and `psycopg2-binary` to the `requirements.txt`
+
+```text
+Flask-SQLAlchemy==2.4.0
+psycopg2-binary==2.8.3
+``` 
+
+We updated the `project/config.py` module to add `SQLALCHEMY_TRACK_MODIFICATIONS` and `SQLALCHEMY_DATABASE_URI`
+
+* `SQLALCHEMY_TRACK_MODIFICATIONS` prevent to get notified before and after changes are committed to the database, when it sets to `False`
+* `SQLALCHEMY_DATABASE_URI` is the database URI that should be used for the connection. 
+
+```python
+import os
+...
+
+class BaseConfig:
+    """Base configuration"""
+    ...
+    SQLALCHEMY_TRACK_MODIFICATIONS = False
+
+class DevelopmentConfig(BaseConfig):
+    """Development configuration"""
+    SQLALCHEMY_DATABASE_URI = os.environ.get('DATABASE_URL')
+
+
+class TestingConfig(BaseConfig):
+    """Testing configuration"""
+    ...
+    SQLALCHEMY_DATABASE_URI = os.environ.get('DATABASE_TEST_URL')
+
+
+class ProductionConfig(BaseConfig):
+    """Production configuration"""
+    SQLALCHEMY_DATABASE_URI = os.environ.get('DATABASE_URL')
+```
+
+We updated the `project/__init__.py` module to create a new instance of SQLAlchemy and define the database model:
+
+```python
+...
+
+# instantiate the db
+db = SQLAlchemy(app)
+
+# model
+class User(db.Model):
+    __tablename__ = 'users'
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    username = db.Column(db.String(128), nullable=False)
+    email = db.Column(db.String(128), nullable=False)
+    active = db.Column(db.Boolean(), default=True, nullable=False)
+
+    def __init__(self, username, email):
+        self.username = username
+        self.email = email
+
+...
+```
+
+We added a `db` directory to `project` and a `create.sql` file in it
+
+```shell script
+CREATE DATABASE users_dev;
+CREATE DATABASE users_test;
+CREATE DATABASE users_prod;
+```
+
+We added a `Dockerfile` in `project/db` to pull `postgres:11.4-alpine` and run create.sql on init
+
+```dockerfile
+# pull official base image
+FROM postgres:11.4-alpine
+
+# run create.sql on init
+ADD create.sql /docker-entrypoint-initdb.d
+```
+
+
+We updated `docker-compose.yml` to add db services
+
+```yaml
+version: '3.7'
+
+services:
+
+    users:
+      ...
+      environment:
+        ...
+        - DATABASE_URL=postgresql://postgres:postgres@users-db:5432/users_dev
+        - DATABASE_TEST_URL=postgresql://postgres:postgres@users-db:5432/users_test
+      depends_on:
+        - users-db
+    
+    
+    users-db:  # new
+      build:
+        context: ./project/db
+        dockerfile: Dockerfile
+      expose:
+        - 5432
+      environment:
+        - POSTGRES_USER=postgres
+        - POSTGRES_PASSWORD=postgres
+```
+
+We added an `entrypoint.sh` file in the root:
+
+```shell script
+#!/bin/sh
+
+echo "Waiting for postgres..."
+
+while ! nc -z users-db 5432; do
+  sleep 0.1
+done
+
+echo "PostgreSQL started"
+
+python manage.py run -h 0.0.0.0
+```
+
+So, we referenced the Postgres container using the name of the service, users-db. The loop continues until something like Connection to users-db port 5432 \[tcp/postgresql] succeeded! is returned.
+
+We updated `project/Dockerfile`
+
+```dockerfile
+# pull official base image
+FROM python:3.7.4-alpine
+
+# new
+# install dependencies
+RUN apk update && \
+    apk add --virtual build-deps gcc python-dev musl-dev && \
+    apk add postgresql-dev && \
+    apk add netcat-openbsd
+
+# set environment varibles
+ENV PYTHONDONTWRITEBYTECODE 1
+ENV PYTHONUNBUFFERED 1
+
+# set working directory
+WORKDIR /usr/src/app
+
+# add and install requirements
+COPY ./requirements.txt /usr/src/app/requirements.txt
+RUN pip install -r requirements.txt
+
+# new
+# add entrypoint.sh
+COPY ./entrypoint.sh /usr/src/app/entrypoint.sh
+RUN chmod +x /usr/src/app/entrypoint.sh
+
+# add app
+COPY . /usr/src/app
+```
+
+We added an `entrypoint` to the `docker-compose.yml`
+
+```yaml
+version: '3.7'
+
+services:
+
+    users:
+      build: ...
+      entrypoint: ['/usr/src/app/entrypoint.sh']
+    ...
+```
+
+We can run the server:
+
+We use chmod +x to avoid `permisson denied`
+
+> Depending on your environment, you may need to chmod 755 or 777 instead of +x.  
+> If you still get a "permission denied", review the docker entrypoint running bash script gets "permission denied" Stack Overflow question.
+
+```shell script
+chmod +x entrypoint.sh
+docker-compose up -d --build
+```
+
+Try to go [http://localhost:5001/ping](http://localhost:5001/ping)
+
+We updated `manage.py` to register a new command, `recreate_db`, to the CLI so that we can run it from the command line, which we'll use shortly to apply the model to the database.
+
+```python
+from project import app, db
+
+...
+
+@cli.command('recreate_db')
+def recreate_db():
+    db.drop_all()
+    db.create_all()
+    db.session.commit()
+```
