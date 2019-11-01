@@ -693,3 +693,490 @@ users_dev=# \dt
 users_dev=# \q
 </pre>
 
+## RESTful Routes
+
+Now, we add 3 new routes:
+
+Endpoint | HTTP Method | CRUD Method | Result
+--- | --- | --- | ---
+/users | GET | READ | get all users
+/users/:id | GET | READ | get a single user
+/users | POST | CREATE | add a user
+
+For each, we'll:
+
+1. write a test
+2. run the test, to ensure it fails (`red`)
+3. write just enough code to get the test to pass (`green`)
+4. refactor (if necessary)
+
+Let's start with the POST route.
+
+### POST
+
+We need to add a module `test_users.py` to `project/tests`
+
+```python
+import json
+
+
+def test_add_user(test_app, test_database):
+    client = test_app.test_client()
+    resp = client.post(
+        '/users',
+        data=json.dumps({
+            'username': 'michael',
+            'email': 'michael@testdriven.io'
+        }),
+        content_type='application/json',
+    )
+    data = json.loads(resp.data.decode())
+    assert resp.status_code == 201
+    assert 'michael@testdriven.io was added!' in data['message']
+    assert 'success' in data['status']
+```
+
+Now run the test to ensure it fails
+
+```shell script
+docker-compose exec users pytest "project/tests"
+```
+
+Add the route handler to `project/api/users.py`
+
+```python
+from flask import Blueprint, request
+from flask_restful import Resource, Api
+
+from project import db
+from project.api.models import User
+
+
+users_blueprint = Blueprint('users', __name__)
+api = Api(users_blueprint)
+
+
+class UsersList(Resource):
+    def post(self):
+        post_data = request.get_json()
+        username = post_data.get('username')
+        email = post_data.get('email')
+        db.session.add(User(username=username, email=email))
+        db.session.commit()
+        response_object = {
+            'status': 'success',
+            'message': f'{email} was added!'
+        }
+        return response_object, 201
+
+
+api.add_resource(UsersList, '/users')
+
+```
+
+Register the blueprint in `project/__init__.py`
+
+```python
+from project.api.users import users_blueprint
+app.register_blueprint(users_blueprint)
+```
+
+Run the test again
+
+> If we have some warning, you can pass `-p no:warnings` on the command-line in to disable them.  
+> Or add the following lines in the `project/tests/pytest.ini`
+> ```
+> [pytest]
+> addopts = -p no:warnings
+> ```
+> See [here](https://docs.pytest.org/en/latest/warnings.html#disabling-warning-capture-entirely) for more information
+
+```shell script
+docker-compose exec users pytest "project/tests" {-p no:warnings}
+```
+
+What about errors and exceptions? Like:
+
+1. A payload is not sent
+2. The payload is invalid -- i.e., the JSON object is empty or it contains the wrong keys
+3. The user already exists in the database
+
+We need to add some tests in `project/tests/test_users.py`
+
+```python
+def test_add_user_invalid_json(test_app, test_database):
+    client = test_app.test_client()
+    resp = client.post(
+        '/users',
+        data=json.dumps({}),
+        content_type='application/json',
+    )
+    data = json.loads(resp.data.decode())
+    assert resp.status_code == 400
+    assert 'Invalid payload.' in data['message']
+    assert 'fail' in data['status']
+
+
+def test_add_user_invalid_json_keys(test_app, ):
+    client = test_app.test_client()
+    resp = client.post(
+        '/users',
+        data=json.dumps({"email": "john@testdriven.io"}),
+        content_type='application/json',
+    )
+    data = json.loads(resp.data.decode())
+    assert resp.status_code == 400
+    assert 'Invalid payload.' in data['message']
+    assert 'fail' in data['status']
+
+
+def test_add_user_duplicate_email(test_app, test_database):
+    client = test_app.test_client()
+    client.post(
+        '/users',
+        data=json.dumps({
+            'username': 'michael',
+            'email': 'michael@testdriven.io'
+        }),
+        content_type='application/json',
+    )
+    resp = client.post(
+        '/users',
+        data=json.dumps({
+            'username': 'michael',
+            'email': 'michael@testdriven.io'
+        }),
+        content_type='application/json',
+    )
+    data = json.loads(resp.data.decode())
+    assert resp.status_code == 400
+    assert 'Sorry. That email already exists.' in data['message']
+    assert 'fail' in data['status']
+```
+
+Ensure the tests fails by running:
+
+```shell script
+docker-compose exec users pytest "project/tests"
+```
+
+Update the route handler
+
+```python
+from sqlalchemy import exc
+
+...
+
+class UsersList(Resource):
+    def post(self):
+        post_data = request.get_json()
+        response_object = {
+            'status': 'fail',
+            'message': 'Invalid payload.'
+        }
+        if not post_data:
+            return response_object, 400
+        username = post_data.get('username')
+        email = post_data.get('email')
+        try:
+            user = User.query.filter_by(email=email).first()
+            if not user:
+                db.session.add(User(username=username, email=email))
+                db.session.commit()
+                response_object['status'] = 'success'
+                response_object['message'] = f'{email} was added!'
+                return response_object, 201
+            else:
+                response_object['message'] = 'Sorry. That email already exists.'
+                return response_object, 400
+        except exc.IntegrityError:
+            db.session.rollback()
+            return response_object, 400
+```
+
+Ensure the tests pass
+
+### GET single user
+
+We start by writing the test in `project/tests/test_users.py`
+
+```python
+...
+
+from project import db
+from project.api.models import User
+
+...
+
+def test_single_user(test_app, test_database):
+    user = User(username='jeffrey', email='jeffrey@testdriven.io')
+    db.session.add(user)
+    db.session.commit()
+    client = test_app.test_client()
+    resp = client.get(f'/users/{user.id}')
+    data = json.loads(resp.data.decode())
+    assert resp.status_code == 200
+    assert 'jeffrey' in data['data']['username']
+    assert 'jeffrey@testdriven.io' in data['data']['email']
+    assert 'success' in data['status']
+```
+
+Ensure the test breaks and write the route
+
+```python
+class Users(Resource):
+    def get(self, user_id):
+        user = User.query.filter_by(id=user_id).first()
+        response_object = {
+            'status': 'success',
+            'data': {
+                'id': user.id,
+                'username': user.username,
+                'email': user.email,
+                'active': user.active
+            }
+        }
+        return response_object, 200
+
+...
+api.add_resource(Users, '/users/<user_id>')
+```
+
+The tests should pass. Now, what about error handling?
+
+1. An id is not provided
+2. The id does not exist
+
+Tests:
+
+```python
+def test_single_user_no_id(test_app, test_database):
+    client = test_app.test_client()
+    resp = client.get('/users/blah')
+    data = json.loads(resp.data.decode())
+    assert resp.status_code == 404
+    assert 'User does not exist' in data['message']
+    assert 'fail' in data['status']
+
+
+def test_single_user_incorrect_id(test_app, test_database):
+    client = test_app.test_client()
+    resp = client.get('/users/999')
+    data = json.loads(resp.data.decode())
+    assert resp.status_code == 404
+    assert 'User does not exist' in data['message']
+    assert 'fail' in data['status']
+```
+
+Update the route
+
+```python
+class Users(Resource):
+    def get(self, user_id):
+        response_object = {
+            'status': 'fail',
+            'message': 'User does not exist'
+        }
+        try:
+            user = User.query.filter_by(id=int(user_id)).first()
+            if not user:
+                return response_object, 404
+            else:
+                response_object = {
+                    'status': 'success',
+                    'data': {
+                        'id': user.id,
+                        'username': user.username,
+                        'email': user.email,
+                        'active': user.active
+                    }
+                }
+                return response_object, 200
+        except ValueError:
+            return response_object, 404
+```
+
+### GET all users
+
+Again, let's start with a test.
+
+Since we'll have to add a few users first, let's add a quick helper function to a new utility file called `project/tests/utils.py`
+
+```python
+from project import db
+from project.api.models import User
+
+
+def add_user(username, email):
+    user = User(username=username, email=email)
+    db.session.add(user)
+    db.session.commit()
+    return user
+```
+
+Now, refactor the `test_single_user` test, like so:
+
+```python
+from project.tests.utils import add_user
+
+...
+
+def test_single_user(test_app, test_database):
+    user = add_user('jeffrey', 'jeffrey@testdriven.io')
+    client = test_app.test_client()
+    resp = client.get(f'/users/{user.id}')
+    data = json.loads(resp.data.decode())
+    assert resp.status_code == 200
+    assert 'jeffrey' in data['data']['username']
+    assert 'jeffrey@testdriven.io' in data['data']['email']
+    assert 'success' in data['status']
+```
+
+Remove these imports
+
+```python
+from project import db
+from project.api.models import User
+```
+
+Make sure the test still pass
+
+```shell script
+docker-compose exec users pytest "project/tests"
+```
+
+Now let's add the new test
+
+```python
+def test_all_users(test_app, test_database):
+    add_user('michael', 'michael@mherman.org')
+    add_user('fletcher', 'fletcher@notreal.com')
+    client = test_app.test_client()
+    resp = client.get('/users')
+    data = json.loads(resp.data.decode())
+    assert resp.status_code == 200
+    assert len(data['data']['users']) == 2
+    assert 'michael' in data['data']['users'][0]['username']
+    assert 'michael@mherman.org' in data['data']['users'][0]['email']
+    assert 'fletcher' in data['data']['users'][1]['username']
+    assert 'fletcher@notreal.com' in data['data']['users'][1]['email']
+    assert 'success' in data['status']
+```
+
+Make sure it fails. Then add the view to the `UsersList` resource:
+
+```python
+def get(self):
+    response_object = {
+        'status': 'success',
+        'data': {
+            'users': [user.to_json() for user in User.query.all()]
+        }
+    }
+    return response_object, 200
+```
+
+Add the `to_json` method to the model:
+
+```python
+def to_json(self):
+    return {
+        'id': self.id,
+        'username': self.username,
+        'email': self.email,
+        'active': self.active
+    }
+```
+
+Run the test
+
+```shell script
+docker-compose exec users pytest "project/tests"
+```
+
+Result
+
+<pre>
+>       assert len(data['data']['users']) == 2
+E       AssertionError: assert 4 == 2
+E        +  where 4 = len([{'active': True, 'email': 'michael@testdriven.io', 'id': 1, 'username': 'michael'}, {'active': True, 'email': 'jeffre...', 'id': 4, 'username': 'michael'}, {'active': True, 'email': 'fletcher@notreal.com', 'id': 5, 'username': 'fletcher'}])
+</pre>
+
+The test failed
+
+Why are there four users? Essentially, we added a single user each in the `test_add_user` and `test_single_user` tests. Two more get added in the `test_all_users`. We could fix this by changing the tests to:
+
+```python
+def test_all_users(test_app, test_database):
+    add_user('michael', 'michael@mherman.org')
+    add_user('fletcher', 'fletcher@notreal.com')
+    client = test_app.test_client()
+    resp = client.get('/users')
+    data = json.loads(resp.data.decode())
+    assert resp.status_code == 200
+    assert len(data['data']['users']) == 4
+    assert 'michael' in data['data']['users'][2]['username']
+    assert 'michael@mherman.org' in data['data']['users'][2]['email']
+    assert 'fletcher' in data['data']['users'][3]['username']
+    assert 'fletcher@notreal.com' in data['data']['users'][3]['email']
+    assert 'success' in data['status']
+```
+
+However, what would happen if another developer changed the number of users added in either `test_add_user` or `test_single_user`?
+
+When writing tests, it's a good idea to run each test in isolation to ensure that each can be run mostly on their own. This makes it easier to run tests in parallel and it helps reduce flaky tests. When there's shared testing code, it's easy for other developers to change that code and have other tests break or produce false positives. Don't worry so much about keeping your tests DRY, in other words.
+
+Let's add another helper to wipe the database in `project/tests/utils.py`:
+
+```python
+def recreate_db():
+    db.session.remove()
+    db.drop_all()
+    db.create_all()
+```
+
+Add `recreate_db` in `test_all_users`, don't forget to import it:
+
+```python
+...
+from project.tests.utils import add_user, recreate_db
+
+...
+def test_all_users(test_app, test_database):
+    recreate_db()
+    ...
+```
+
+The test should pass now
+
+Let's test the route in the browser: [http://localhost:5000/users](http://localhost:5000/users)
+
+Result
+
+<pre>
+{
+    "status": "success",
+    "data": {
+        "users": []
+    }
+}
+</pre>
+
+Add a seed command to the `manage.py` file to populate the database with some initial data:
+
+```python
+@cli.command('seed_db')
+def seed_db():
+    """Seeds the database."""
+    db.session.add(User(username='michael', email="hermanmu@gmail.com"))
+    db.session.add(User(username='michaelherman', email="michael@mherman.org"))
+    db.session.commit()
+```
+
+Try it:
+
+```shell script 
+docker-compose exec users python manage.py seed_db
+```
+
+Now, you should have some data in the browser: [http://localhost:5000/users](http://localhost:5000/users)
