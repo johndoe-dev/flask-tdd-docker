@@ -343,3 +343,170 @@ def recreate_db():
     db.create_all()
     db.session.commit()
 ```
+
+## TEST
+
+We added a `tests` python package into `project` and added the following files:
+* `__init__.py`
+* `conftest.py`
+* `pytest.ini`
+* `test_config.py`
+* `test_ping.py`
+
+
+In `conftest.py`, w define a `test_app` and `test_database` (for initializing a test database) [`fixture`](https://docs.pytest.org/en/latest/fixture.html) in conftest.py:
+
+```python
+import pytest
+
+from project import app, db
+
+
+@pytest.fixture(scope='module')
+def test_app():
+    app.config.from_object('project.config.TestingConfig')
+    with app.app_context():
+        yield app  # testing happens here
+
+
+@pytest.fixture(scope='module')
+def test_database():
+    db.create_all()
+    yield db  # testing happens here
+    db.session.remove()
+    db.drop_all()
+```
+
+equivalent of `test_database()` with [`unittest`](https://docs.python.org/fr/3/library/unittest.html) is:
+
+```python
+def setUp(self):
+    db.create_all()
+
+def tearDown(self):
+    db.session.remove()
+    db.drop_all()
+```
+
+All code before the yield statement serves as setup code while everything after serves as the teardown.
+
+We added `pytest==5.0.1` to the `requirements.txt`
+
+We need to re-build the Docker images since requirements are installed at build time rather than run time:
+
+```shell script
+docker-compose up -d --build
+```
+
+And we can run the tests once the containers are up:
+
+```shell script
+docker-compose exec users pytest "project/tests"
+```
+
+You should see:
+
+<pre>
+======================================== test session starts ========================================
+platform linux -- Python 3.7.4, pytest-5.0.1, py-1.8.0, pluggy-0.12.0
+rootdir: /usr/src/app/project/tests, inifile: pytest.ini
+collected 0 items
+
+=================================== no tests ran in 0.06 seconds ====================================
+</pre>
+
+Now, we add some tests in `test_config.py`
+
+```python
+import os
+
+
+def test_development_config(test_app):
+    test_app.config.from_object('project.config.DevelopmentConfig')
+    assert test_app.config['SECRET_KEY'] == 'my_precious'
+    assert not test_app.config['TESTING']
+    assert test_app.config['SQLALCHEMY_DATABASE_URI'] == os.environ.get('DATABASE_URL')
+
+
+def test_testing_config(test_app):
+    test_app.config.from_object('project.config.TestingConfig')
+    assert test_app.config['SECRET_KEY'] == 'my_precious'
+    assert test_app.config['TESTING']
+    assert not test_app.config['PRESERVE_CONTEXT_ON_EXCEPTION']
+    assert test_app.config['SQLALCHEMY_DATABASE_URI'] == os.environ.get('DATABASE_TEST_URL')
+
+
+def test_production_config(test_app):
+    test_app.config.from_object('project.config.ProductionConfig')
+    assert test_app.config['SECRET_KEY'] == 'my_precious'
+    assert not test_app.config['TESTING']
+    assert test_app.config['SQLALCHEMY_DATABASE_URI'] == os.environ.get('DATABASE_URL')
+```
+
+While unittest requires test classes, Pytest just requires functions to get up and running. In other words, Pytest tests are just functions that either start or end with test.
+
+To use the fixture, we passed it in as an argument.
+
+You should see the following error:
+
+<pre>
+>       assert test_app.config['SECRET_KEY'] == 'my_precious'
+E       AssertionError: assert None == 'my_precious'
+</pre>
+
+We need to update the `BaseConfig` class in `project/config.py` and add `SECRET_KEY = 'my_precious'
+
+When we re-test:
+
+<pre>
+========================================================================================================== test session starts ===========================================================================================================
+platform linux -- Python 3.7.4, pytest-5.0.1, py-1.8.0, pluggy-0.13.0
+rootdir: /usr/src/app
+collected 3 items                                                                                                                                                                                                                        
+
+project/tests/test_config.py ...                                                                                                                                                                                                   [100%]
+
+======================================================================================================== 3 passed in 0.07 seconds ========================================================================================================
+</pre>
+
+We add now a functional test in `test_ping.py`
+
+```python
+import json
+
+
+def test_ping(test_app):
+    client = test_app.test_client()
+    resp = client.get('/ping')
+    data = json.loads(resp.data.decode())
+    assert resp.status_code == 200
+    assert 'pong' in data['message']
+    assert 'success' in data['status']
+```
+
+Result of test:
+
+<pre>
+========================================================================================================== test session starts ===========================================================================================================
+platform linux -- Python 3.7.4, pytest-5.0.1, py-1.8.0, pluggy-0.13.0
+rootdir: /usr/src/app/project/tests, inifile: pytest.ini
+collected 4 items                                                                                                                                                                                                                        
+
+project/tests/test_config.py ...                                                                                                                                                                                                   [ 75%]
+project/tests/test_ping.py .                                                                                                                                                                                                       [100%]
+
+======================================================================================================== 4 passed in 0.10 seconds ========================================================================================================
+</pre>
+
+> Did you notice that the tests in test_config.py are unit tests while the tests in test_ping.py are functional? You may want to differentiate between the two by splitting them out into separate folders, like so:
+> <pre>
+> └── tests
+>   ├── __init__.py
+>   ├── conftest.py
+>   ├── functional
+>   │   └── test_ping.py
+>   ├── pytest.ini
+>   └── unit
+>       └── test_config.py
+> </pre>
+> With this structure you have the flexibility to run a single type of test at a time. You can also check code coverage for a single type of test.
