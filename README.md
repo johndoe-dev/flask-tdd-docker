@@ -510,3 +510,186 @@ project/tests/test_ping.py .                                                    
 >       └── test_config.py
 > </pre>
 > With this structure you have the flexibility to run a single type of test at a time. You can also check code coverage for a single type of test.
+
+
+## Flask Blueprint
+
+Now we need to refactor the app and adding in `Blueprints`
+
+We need to create an `api` package into `project` and add the modules `ping.py`, `models.py` and `users.py`
+
+In `api/ping.py`
+
+```python
+from flask import Blueprint
+from flask_restful import Resource, Api
+
+
+ping_blueprint = Blueprint('ping', __name__)
+api = Api(ping_blueprint)
+
+
+class Ping(Resource):
+    def get(self):
+        return {
+            'status': 'success',
+            'message': 'pong!'
+        }
+
+
+api.add_resource(Ping, '/ping')
+```
+
+In `api/models.py`
+
+```python
+from sqlalchemy.sql import func
+
+from project import db
+
+
+class User(db.Model):
+
+    __tablename__ = 'users'
+
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    username = db.Column(db.String(128), nullable=False)
+    email = db.Column(db.String(128), nullable=False)
+    active = db.Column(db.Boolean(), default=True, nullable=False)
+    created_date = db.Column(db.DateTime, default=func.now(), nullable=False)
+
+    def __init__(self, username, email):
+        self.username = username
+        self.email = email
+
+```
+
+Now we will an [`Application`](https://flask.palletsprojects.com/en/1.1.x/patterns/appfactories/) factory pattern in `project/__init__.py` and remove route and models
+
+```python
+import os
+from flask import Flask
+from flask_sqlalchemy import SQLAlchemy
+
+# instantiate the db
+db = SQLAlchemy()
+
+
+def create_app(script_info=None):
+
+    # instantiate the app
+    app = Flask(__name__)
+
+    # set config
+    app_settings = os.getenv('APP_SETTINGS')
+    app.config.from_object(app_settings)
+
+    # set up extensions
+    db.init_app(app)
+
+    # register blueprints
+    from project.api.ping import ping_blueprint
+    app.register_blueprint(ping_blueprint)
+
+    # shell context for flask cli
+    @app.shell_context_processor
+    def ctx():
+        return {'app': app, 'db': db}
+
+    return app
+```
+
+Take note of the [`shell_context_processor`](https://flask.palletsprojects.com/en/1.1.x/api/#flask.Flask.shell_context_processor). It's used to register the `app` and `db` to the shell. Now we can work with the application context and the database without having to import them directly into the shell, which you'll see shortly.
+
+We need to update `manage.py`
+
+```python
+...
+from project import create_app, db
+from project.api.models import User
+
+app = create_app()
+cli = FlaskGroup(create_app=create_app)
+
+...
+```
+
+Now, we can work with the app and db context directly:
+
+```shell script
+docker-compose up -d
+docker-compose exec users flask shell
+```
+
+Result:
+<pre>
+Python 3.7.4 (default, Aug 21 2019, 00:19:59) 
+[GCC 8.3.0] on linux
+App: project [development]
+Instance: /usr/src/app/instance
+>>> app
+&lt;Flask 'project'>
+>>> db
+&lt;SQLAlchemy engine=postgresql://postgres:***@users-db:5432/users_dev>
+</pre>
+
+We need to update `project/tests/conftest.py` to import `create_app` whis is an instance of the app
+
+```python
+...
+from project import create_app, db
+
+@pytest.fixture(scope='module')
+def test_app():
+    app = create_app()
+    ...
+...
+```
+
+Finally, we just need to remove the `FLASK_APP` environment variable from `docker-compose.yml`
+
+```yaml
+environment:
+  - FLASK_ENV=development
+  - APP_SETTINGS=project.config.DevelopmentConfig
+  - DATABASE_URL=postgresql://postgres:postgres@users-db:5432/users_dev
+  - DATABASE_TEST_URL=postgresql://postgres:postgres@users-db:5432/users_test
+```
+
+We can run the test
+
+```shell script
+docker-compose up -d
+docker-compose exec users pytest "project/tests"
+```
+
+We can now apply the model to the dev database
+
+```shell script
+docker-compose exec users python manage.py recreate_db
+```
+
+Now check in psql
+
+```shell script
+docker-compose exec users-db psql -U postgres
+```
+
+Result
+
+<pre>
+psql (11.4)
+Type "help" for help.
+
+postgres=# \c users_dev
+You are now connected to database "users_dev" as user "postgres".
+users_dev=# \dt
+         List of relations
+ Schema | Name  | Type  |  Owner   
+--------+-------+-------+----------
+ public | users | table | postgres
+(1 row)
+
+users_dev=# \q
+</pre>
+
