@@ -1726,3 +1726,88 @@ Once done, add the GitLab CI status badge:
 <pre>
 [![pipeline status](https://gitlab.com/johndoe-dev-tdd/flask-tdd-docker/badges/master/pipeline.svg)](https://gitlab.com/johndoe-dev-tdd/flask-tdd-docker/commits/master)
 </pre>
+
+
+## Continuous Delivery
+
+Find your [`Heroku auth token`](https://devcenter.heroku.com/articles/authentication)
+
+```shell script
+heroku auth:token
+```
+
+To create a long-term token, use:
+
+```shell script
+heroku authorizations:create
+```
+
+Save the token as a new variable called `HEROKU_AUTH_TOKEN` within your project's CI/CD settings: Settings > CI / CD > Variables
+
+Now, add a new deploy stage to the GitLab config file `.gitlab-ci.yml`:
+
+```yaml
+stages:
+  - build
+  - test
+  - deploy
+
+...
+
+deploy:
+  stage: deploy
+  services:
+    - docker:dind
+  variables:
+    DOCKER_DRIVER: overlay2
+    HEROKU_APP_NAME: vast-refuge-42324
+    HEROKU_REGISTRY_IMAGE: registry.heroku.com/${HEROKU_APP_NAME}/web
+  script:
+    - apk add --no-cache curl
+    - docker build
+        --tag $HEROKU_REGISTRY_IMAGE
+        --file ./Dockerfile.prod
+        "."
+    - docker login -u _ -p $HEROKU_AUTH_TOKEN registry.heroku.com
+    - docker push $HEROKU_REGISTRY_IMAGE
+    - ./release.sh
+```
+
+Add `release.sh` to the project root
+
+```shell script
+#!/bin/sh
+
+
+IMAGE_ID=$(docker inspect ${HEROKU_REGISTRY_IMAGE} --format={{.Id}})
+PAYLOAD='{"updates": [{"type": "web", "docker_image": "'"$IMAGE_ID"'"}]}'
+
+curl -n -X PATCH https://api.heroku.com/apps/$HEROKU_APP_NAME/formation \
+  -d "${PAYLOAD}" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/vnd.heroku+json; version=3.docker-releases" \
+  -H "Authorization: Bearer ${HEROKU_AUTH_TOKEN}"
+```
+
+In the `deploy` stage, we:
+
+1. Install cURL
+2. Build and tag the new image
+3. Log in to the Heroku Container Registry
+4. Push the image up to the registry
+5. Create a new release via the Heroku API using the image ID within the `release.sh` script
+
+To test, make a quick change to the `Ping` get route by removing the explanation point ( `!` ):
+
+Commit your code and again push it up. Your app should be auto deployed to Heroku! Navigate to:
+
+[https://vast-refuge-42324.herokuapp.com/ping](https://vast-refuge-42324.herokuapp.com/ping)
+
+You should see:
+
+<pre>
+{
+  "status": "success",
+  "message": "pong"
+}
+</pre>
