@@ -785,7 +785,7 @@ Run the test again
 
 > If we have some warning, you can pass `-p no:warnings` on the command-line in to disable them.  
 > Or add the following lines in the `project/tests/pytest.ini`
-> ```
+> ```buildoutcfg
 > [pytest]
 > addopts = -p no:warnings
 > ```
@@ -1465,3 +1465,187 @@ Via: 1.1 vegur
     "status": "success"
 }
 </pre>
+
+
+## Code Coverage and Quality
+
+### Code Coverage
+
+[`Code coverage`](https://en.wikipedia.org/wiki/Code_coverage) is the measure of how much code is executed during testing. By adding code coverage to your test suit, you can find areas of your code not covered by tests.
+
+`Coverage.py` is a popular tool for measuring code coverage in Python-based applications. Now, since we're using `Pytest`, we'll integrate Coverage.py with `Pytest` using `pytest-cov`.
+
+Add `pytest-cov` to the `requirements.txt`
+
+```
+pytest-cov==2.8.1
+```
+
+Next, we can configure the coverage reports in a `.coveragerc` file. Add this file to the project root, and then add the following config to exclude the tests from the coverage results:
+
+```buildoutcfg
+[run]
+omit = project/tests/*
+```
+
+Update the containers
+
+```shell script
+docker-compose up -d --build
+```
+
+Run the tests with coverage
+
+```shell script
+docker-compose exec users pytest "project/tests" --cov="project"
+```
+
+Result
+
+<pre>
+Name                      Stmts   Miss  Cover
+---------------------------------------------
+project/__init__.py          16      1    94%
+project/api/__init__.py       0      0   100%
+project/api/models.py        14      0   100%
+project/api/ping.py           8      0   100%
+project/api/users.py         44      0   100%
+project/config.py            12      0   100%
+---------------------------------------------
+TOTAL                        94      1    99%
+</pre>
+
+To see a HTML version
+
+```shell script
+docker-compose exec users pytest "project/tests" --cov="project" --cov-report html
+```
+
+The HTML version can be viewed within the newly created `htmlcov` directory. With it, you can quickly see which parts of the code are, and are not, covered by a test.
+
+Add `htmlcov` directory and `.coverage` in the `.gitignore` and the `.dockerignore`
+
+run the following cmd to view html result
+
+```shell script
+open htmlcov/index.html
+```
+
+> Just keep in mind that while code coverage is a good metric to look at, it does not measure the overall effectiveness of the test suite. In other words, having 100% coverage means that every line of code is being tested; it does not mean that the tests handle every scenario.
+>
+> In other words, just because you have 100% test coverage doesn’t mean you're testing the right things.
+
+### Code Quality
+
+[`Linting`](https://stackoverflow.com/questions/8503559/what-is-linting/8503586#8503586) is the process of checking your code for stylistic or programming errors. Although there are a [number](https://github.com/vintasoftware/python-linters-and-code-analysis) of commonly used linters for Python, we'll use [`Flake8`](https://gitlab.com/pycqa/flake8) since it combines two other popular linters -- [`pep8`](https://pypi.org/project/pep8/) and [`pyflakes`](https://pypi.org/project/pyflakes/).
+
+Add flake8 to the `requirements.txt` file
+
+```
+flake8===3.7.9
+```
+
+To configure flake8, add a `setup.cfg` file to the project root
+
+```buildoutcfg
+[flake8]
+max-line-length = 119
+```
+
+This sets the maximum allowed line length to 119.
+
+Update the containers
+
+```shell script
+docker-compose up -d --build
+```
+
+Run flake8
+
+```shell script
+docker-compose exec users flake8 project
+```
+
+Result
+
+<pre>
+project/tests/functional/test_ping.py:10:39: W292 no newline at end of file
+</pre>
+
+Correct any issues
+
+Next, let's add [`Black`](https://black.readthedocs.io/en/stable/), which is used for formatting your code so that "code looks the same regardless of the project you're reading". This helps to speed up code reviews. "Formatting becomes transparent after a while and you can focus on the content instead."
+
+Add `black` to the `requirements.txt`
+
+```
+black==19.10b0
+```
+
+Update the containers, and then run Black:
+
+```shell script
+docker-compose up -d --build
+docker-compose exec users black project --check
+```
+
+Since we used the check option, you should see the status:
+
+<pre>
+would reformat /usr/src/app/project/__init__.py
+would reformat /usr/src/app/project/api/ping.py
+would reformat /usr/src/app/project/config.py
+would reformat /usr/src/app/project/tests/conftest.py
+would reformat /usr/src/app/project/api/models.py
+would reformat /usr/src/app/project/tests/functional/test_ping.py
+would reformat /usr/src/app/project/tests/unit/test_config.py
+would reformat /usr/src/app/project/api/users.py
+would reformat /usr/src/app/project/tests/test_users.py
+Oh no! 💥 💔 💥
+9 files would be reformatted, 3 files would be left unchanged.
+</pre>
+
+Try running it with the diff option as well before applying the changes:
+
+```shell script
+docker-compose exec users black project --diff
+```
+
+You well see all the changes that we'll be done
+
+```shell script
+docker-compose exec users black project
+```
+
+Now the code has been automatically reformatted
+
+Finally, let's add [`isort`](https://github.com/timothycrosley/isort) to the project as well to quickly sort all our imports alphabetically and automatically separated into sections.
+
+Add `isort` to `requirements.txt`
+
+```
+isort==4.3.21
+``` 
+
+Rebuild, run it with the `check-only` and `diff` options:
+
+```shell script
+docker-compose up -d --build
+docker-compose exec users /bin/sh -c "isort project/*/*.py" --check-only
+docker-compose exec users /bin/sh -c "isort project/*/*.py" --diff
+```
+
+Then apply the changes
+
+```shell script
+docker-compose exec users /bin/sh -c "isort project/*/*.py"
+```
+
+Verify one last time that `flake8`, `Black`, and `isort` all pass:
+
+```shell script
+docker-compose exec users flake8 project
+docker-compose exec users black project --check
+docker-compose exec users /bin/sh -c "isort project/*/*.py" --check-only
+```
+

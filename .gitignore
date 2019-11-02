@@ -1,4 +1,10 @@
 __pycache__
 env
 .idea
+
+# Test
 .pytest_cache
+
+# code coverage
+htmlcov
+.coverage
