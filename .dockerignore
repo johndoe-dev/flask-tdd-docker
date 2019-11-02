@@ -3,6 +3,7 @@ env
 Dockerfile
 Dockerfile.prod
 .pytest_cache
+.DS_Store
 
 
 # Test

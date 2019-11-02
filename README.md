@@ -1649,3 +1649,72 @@ docker-compose exec users black project --check
 docker-compose exec users /bin/sh -c "isort project/*/*.py" --check-only
 ```
 
+## Continuous Integration
+
+Sign in to gitlab
+
+For the following instruction you need to create a [`personal access token`](https://github.com/settings/tokens/new) in Github
+
+Once the personal access token is created, create a `new project`
+
+Select `CI/CD for external repo` and select `GitHub`
+
+Put the personal access token previously created in github
+
+Select the project and click `connect`
+
+Add a `.gitlab-ci.yml` to the root of the project
+
+```yaml
+image: docker:stable
+
+stages:
+  - build
+  - test
+
+variables:
+  IMAGE: ${CI_REGISTRY}/${CI_PROJECT_NAMESPACE}/${CI_PROJECT_NAME}
+
+build:
+  stage: build
+  services:
+    - docker:dind
+  variables:
+    DOCKER_DRIVER: overlay2
+  script:
+    - docker login -u $CI_REGISTRY_USER -p $CI_JOB_TOKEN $CI_REGISTRY
+    - docker pull $IMAGE:latest || true
+    - docker build
+        --cache-from $IMAGE:latest
+        --tag $IMAGE:latest
+        --file ./Dockerfile.prod
+        "."
+    - docker push $IMAGE:latest
+
+test:
+  stage: test
+  image: $IMAGE:latest
+  services:
+    - postgres:latest
+  variables:
+    POSTGRES_DB: users
+    POSTGRES_USER: runner
+    POSTGRES_PASSWORD: ""
+    DATABASE_TEST_URL: postgres://runner@postgres:5432/users
+  script:
+    - pytest "project/tests" -p no:warnings
+    - flake8 project
+    - black project --check
+    - isort project/**/*.py --check-only
+```
+
+we defined two stages, `build` and `test`.
+
+In the `build` stage, we:
+
+1. Log in to the [`GitLab Container Registry`](https://docs.gitlab.com/ee/user/packages/container_registry/index.html)
+2. Pull the previously pushed image (if it exists)
+3. Build and tag the new image
+4. Push the image up to the GitLab Container Registry
+
+Using the image that created in the build stage along with the Postgres service, we run `Pytest`, `flake8`, `Black`, and `isort` in the `test` stage.
