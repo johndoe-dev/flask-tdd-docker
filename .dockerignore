@@ -1,7 +1,10 @@
-__pycache__
 env
-.idea
+.dockerignore
+Dockerfile
+Dockerfile.prod
+.pytest_cache
 .DS_Store
+
 
 # Test
 .pytest_cache
