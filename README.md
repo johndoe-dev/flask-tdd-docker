@@ -1180,3 +1180,288 @@ docker-compose exec users python manage.py seed_db
 ```
 
 Now, you should have some data in the browser: [http://localhost:5000/users](http://localhost:5000/users)
+
+
+## Deployment
+
+We will deployed the app on Heroku
+
+### Gunicorn
+
+We need to add gunicorn to the `requirements.txt`
+
+Create a `Dockerfile.prod` to the root of the project
+
+```dockerfile
+# pull official base image
+FROM python:3.7.4-alpine
+
+# install dependencies
+RUN apk update && \
+    apk add --virtual build-deps gcc python-dev musl-dev && \
+    apk add postgresql-dev && \
+    apk add netcat-openbsd
+
+# set working directory
+WORKDIR /usr/src/app
+
+# set environment varibles
+ENV PYTHONDONTWRITEBYTECODE 1
+ENV PYTHONUNBUFFERED 1
+ENV FLASK_ENV production
+ENV APP_SETTINGS project.config.ProductionConfig
+
+# add and install requirements
+COPY ./requirements.txt /usr/src/app/requirements.txt
+RUN pip install -r requirements.txt
+
+# add app
+COPY . /usr/src/app
+
+# add and run as non-root user
+RUN adduser -D myuser
+USER myuser
+
+# run gunicorn
+CMD gunicorn --bind 0.0.0.0:$PORT manage:app
+```
+
+We add 2 new environment variables:
+
+```dockerfile
+ENV FLASK_ENV production
+ENV APP_SETTINGS project.config.ProductionConfig
+```
+
+We also created and switched to a non-root user, which is [`recommended by Heroku`](https://devcenter.heroku.com/articles/container-registry-and-runtime#run-the-image-as-a-non-root-user).
+
+Finally, take note of the `$PORT` environment variable in the Gunicorn command. Essentially, our web app must be listening on a particular port specified by the `$PORT` environment variable, which is [`supplied by Heroku`](https://devcenter.heroku.com/articles/dynos#web-dynos).
+
+### Heroku
+
+We must [`Sign in`](https://id.heroku.com/login) on Heroku (or [`Sign Up`](https://signup.heroku.com)).
+We need to install [`Heroku CLI`](https://devcenter.heroku.com/articles/heroku-cli)
+
+We need to create a new app:
+
+```shell script
+heroku create [APP]
+```
+
+Result
+
+<pre>
+Creating app... !
+ ▸    Invalid credentials provided.
+heroku: Press any key to open up the browser to login or q to exit: 
+&lt;Login to Hero Cli>
+Creating app... done, ⬢ vast-refuge-42324
+https://vast-refuge-42324.herokuapp.com/ | https://git.heroku.com/vast-refuge-42324.git
+
+</pre>
+
+Log in to the [`Heroku Container Registry`](https://devcenter.heroku.com/articles/container-registry-and-runtime):
+
+```shell script
+heroku container:login
+```
+
+Result
+
+<pre>
+Login Succeeded
+</pre>
+
+Provision a new Postgres database with the [`hobby-dev`](https://devcenter.heroku.com/articles/heroku-postgres-plans#hobby-tier) plan:
+
+```shell script
+heroku addons:create heroku-postgresql:hobby-dev
+```
+
+Result
+
+<pre>
+Creating heroku-postgresql:hobby-dev on ⬢ vast-refuge-42324... free
+Database has been created and is available
+ ! This database is empty. If upgrading, you can transfer
+ ! data from another database with pg:copy
+Created postgresql-spherical-67833 as DATABASE_URL
+Use heroku addons:docs heroku-postgresql to view documentation
+</pre>
+
+To view the documentation
+
+```shell script
+heroku addons:docs heroku-postgresql
+```
+
+Build the production image and tag it with the following format:
+
+```shell script
+registry.heroku.com/<app>/<process-type>
+```
+
+Make sure to replace `<app>` with the name of the Heroku app that you just created and `<process-type>` with `web` since this will be a [`web dyno`](https://www.heroku.com/dynos).
+
+Here the command:
+
+```shell script
+docker build -f Dockerfile.prod -t registry.heroku.com/vast-refuge-42324/web .
+```
+
+To test locally, we need to set the DATABASE_URL environment variable
+
+Grab the URI and then set it locally:
+
+```shell script
+heroku config:get DATABASE_URL
+```
+
+Result:
+
+You have something like that:
+
+<pre>
+postgres://foo:bar@c2-174-129-253-104.compute-1.amazonaws.com:5432/delgun3gpebb0
+</pre>
+
+```shell script
+export DATABASE_URL=postgres://foo:bar@c2-174-129-253-104.compute-1.amazonaws.com:5432/delgun3gpebb0
+```
+
+Then, spin up the container:
+
+```shell script
+docker run --name flask-tdd -e "PORT=8765" -p 5001:8765 registry.heroku.com/vast-refuge-42324/web
+```
+
+Result
+
+<pre>
+[2019-11-02 08:45:08 +0000] [1] [INFO] Starting gunicorn 19.9.0
+[2019-11-02 08:45:08 +0000] [1] [INFO] Listening at: http://0.0.0.0:8765 (1)
+[2019-11-02 08:45:08 +0000] [1] [INFO] Using worker: sync
+[2019-11-02 08:45:08 +0000] [7] [INFO] Booting worker with pid: 7
+</pre>
+
+Navigate to [http://localhost:5001/ping](Navigate to http://localhost:5002/ping.).
+
+You should see the following result on your browser
+
+<pre>
+{
+  "status": "success",
+  "message": "pong!"
+}
+</pre>
+
+You can bring down the container once done:
+
+```shell script
+docker rm flask-tdd
+```
+
+Push the image to the registry
+
+```shell script
+docker push registry.heroku.com/vast-refuge-42324/web:latest
+```
+
+Release the image:
+
+```shell script
+heroku container:release web
+```
+
+Result:
+
+<pre>
+Releasing images web to vast-refuge-42324... done
+</pre>
+
+This will run the container. You should be able to view the app at [https://vast-refuge-42324.herokuapp.com/ping](https://vast-refuge-42324.herokuapp.com/ping).
+
+How about the `users` endpoints? Do they work?
+
+If you try the GET all users endpoint at [https://vast-refuge-42324.herokuapp.com/users](https://vast-refuge-42324.herokuapp.com/users), you should see an error:
+
+<pre>
+{"message": "Internal Server Error"}
+</pre>
+
+To view the logs, run :
+
+```shell script
+heroku logs
+```
+
+Result:
+
+<pre>
+...
+sqlalchemy.exc.ProgrammingError: (psycopg2.errors.UndefinedTable) relation "users" does not exist
+...
+</pre>
+
+To fix, we need to run the `recreate_db` command:
+
+```shell script
+heroku run python manage.py recreate_db
+```
+
+Result
+
+<pre>
+Running python manage.py recreate_db on ⬢ vast-refuge-42324... up, run.8683 (Free)
+</pre>
+
+Seed the DB:
+
+```shell script
+heroku run python manage.py seed_db
+```
+
+Result: 
+
+<pre>
+Running python manage.py seed_db on ⬢ vast-refuge-42324... up, run.3403 (Free)
+</pre>
+
+Test again [https://vast-refuge-42324.herokuapp.com/users](https://vast-refuge-42324.herokuapp.com/users)
+
+You have a better result
+
+<pre>
+{"status": "success", "data": {"users": [{"id": 1, "username": "michael", "email": "hermanmu@gmail.com", "active": true}, {"id": 2, "username": "michaelherman", "email": "michael@mherman.org", "active": true}]}}
+</pre>
+
+Try to add a new user with [`HTTPie`](https://httpie.org):
+
+install httpie using brew:
+
+```shell script
+brew install httpie
+```
+
+Now add a new user
+
+```shell script
+http --json POST https://vast-refuge-42324.herokuapp.com/users username=hello email=hello@world.com
+```
+
+Result:
+
+<pre>
+HTTP/1.1 201 CREATED
+Connection: keep-alive
+Content-Length: 63
+Content-Type: application/json
+Date: Sat, 02 Nov 2019 09:23:31 GMT
+Server: gunicorn/19.9.0
+Via: 1.1 vegur
+
+{
+    "message": "hello@world.com was added!",
+    "status": "success"
+}
+</pre>
