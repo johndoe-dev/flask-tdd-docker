@@ -8,6 +8,10 @@ variables:
   IMAGE: ${CI_REGISTRY}/${CI_PROJECT_NAMESPACE}/${CI_PROJECT_NAME}
 
 build:
+  only:
+    refs:
+      - master
+      - develop
   stage: build
   services:
     - docker:dind
