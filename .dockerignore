@@ -3,3 +3,11 @@ env
 Dockerfile
 Dockerfile.prod
 .pytest_cache
+
+
+# Test
+.pytest_cache
+
+# code coverage
+htmlcov
+.coverage
