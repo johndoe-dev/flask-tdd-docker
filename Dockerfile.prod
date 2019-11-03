@@ -22,7 +22,6 @@ RUN pip install -r requirements.txt
 
 # add app
 COPY . /usr/src/app
-RUN chmod +x /usr/src/app/release.sh
 
 # add and run as non-root user
 RUN adduser -D myuser
