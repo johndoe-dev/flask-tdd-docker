@@ -2287,3 +2287,142 @@ test:
 ```
 
 Now you can triiger a new build in gitlab
+
+## WORKFLOW
+
+### Alias
+
+To save some precious keystrokes, let's create an alias for the `docker-compose command` -- `dc`.
+
+Simply add the following line to your `.bash_profile` file:
+
+```shell script
+vim ~/.bash_profile
+```
+
+tap `i` to insert 
+
+```shell script
+alias dc='docker-compose'
+```
+
+tap `esc` key, then `:wq` to save the file
+
+Run the following to activate the modification:
+
+```shell script
+source ~/.bash_profile
+```
+
+### Common Commands
+
+Build the images:
+
+```shell script
+docker-compose build
+```
+
+Run the containers:
+
+```shell script
+docker-compose up -d
+```
+
+Create the database:
+
+```shell script
+docker-compose exec users python manage.py recreate_db
+```
+
+Seed the database:
+
+```shell script
+docker-compose exec users python manage.py seed_db
+```
+
+Run the tests:
+
+```shell script
+docker-compose exec users pytest "project/tests" -p no:warnings
+```
+
+Run the tests with coverage:
+
+```shell script
+docker-compose exec users pytest "project/tests" -p no:warnings --cov="project"
+```
+
+Lint:
+
+```shell script
+docker-compose exec users flake8 project
+```
+
+Run Black and isort with check options:
+
+```shell script
+docker-compose exec users black project --check
+```
+
+```shell script
+docker-compose exec users /bin/bash -c "isort project/*/*.py" --check-only
+```
+
+Make code changes with Black and isort:
+
+```shell script
+docker-compose exec users black project
+docker-compose exec users /bin/bash -c "isort project/*/*.py"
+```
+
+### Other Commands
+
+To stop the containers:
+
+```shell script
+docker-compose stop
+```
+
+To bring down the containers:
+
+```shell script
+docker-compose down
+```
+
+Want to force a build?
+
+```shell script
+docker-compose build --no-cache
+```
+
+Remove images:
+
+```shell script
+docker rmi $(docker images -q)
+```
+
+### Postgres
+
+Want to access the database via psql?
+
+```shell script
+docker-compose exec users-db psql -U postgres
+```
+
+Then, you can connect to the database and run SQL queries. For example:
+
+```
+# \c users_dev
+# select * from users;
+# \q
+```
+
+## Upgrade
+
+1. `Test coverage`: Add more tests to increase the overall test coverage.
+2. `Swagger`: Configure [Swagger](https://swagger.io) and document the API based on the [OpenAPI Specification](https://www.openapis.org).
+3. `DRY out the code`: There's plenty of places in the code base that could be refactored.
+4. `Flask-CORS`: Use [Flask-CORS](https://flask-cors.readthedocs.io/en/latest/) to handle cross-origin requests -- e.g., requests that originate from a different protocol, IP address, domain name, or port.
+5. `Caching`: Add caching (where appropriate) with [Flask-Cache](https://pythonhosted.org/Flask-Cache/).
+6. `Multi-stage build`: The production Docker image is around 303 MB (`docker images registry.heroku.com/vast-refuge-42324/web :latest`). Use a [multi-stage build](https://docs.docker.com/develop/develop-images/multistage-build/) to decrease the size of the final image.
+
