@@ -608,7 +608,7 @@ We need to update `manage.py`
 ```python
 ...
 from project import create_app, db
-from project.api.models import User
+from project.api.users.models import User
 
 app = create_app()
 cli = FlaskGroup(create_app=create_app)
@@ -751,7 +751,7 @@ from flask import Blueprint, request
 from flask_restful import Resource, Api
 
 from project import db
-from project.api.models import User
+from project.api.users.models import User
 
 
 users_blueprint = Blueprint('users', __name__)
@@ -906,7 +906,7 @@ We start by writing the test in `project/tests/test_users.py`
 ...
 
 from project import db
-from project.api.models import User
+from project.api.users.models import User
 
 ...
 
@@ -1006,7 +1006,7 @@ Since we'll have to add a few users first, let's add a quick helper function to 
 
 ```python
 from project import db
-from project.api.models import User
+from project.api.users.models import User
 
 
 def add_user(username, email):
@@ -1038,7 +1038,7 @@ Remove these imports
 
 ```python
 from project import db
-from project.api.models import User
+from project.api.users.models import User
 ```
 
 Make sure the test still pass
@@ -2041,3 +2041,249 @@ Finally, test our test coverage
 ```shell script
 docker-compose exec users pytest "project/tests" --cov="project"
 ```
+
+## Flask-Admin
+
+[`Flask-Admin`](https://flask-admin.readthedocs.io/en/latest/) adds a functional admin panel to Flask that provides a `CRUD` user interface for managing data based on your data models.
+
+Add the dependency to the `requirements.txt`
+
+```
+Flask-Admin==1.5.4
+```
+
+Update `project/__init__.py`:
+
+```python
+...
+from flask_admin import Admin
+...
+
+admin = Admin(template_mode="bootstrap3")
+
+def create_app(script_info=None):
+    ...
+    if os.getenv("FLASK_ENV") == "development":
+        admin.init_app(app)
+    
+    ...
+```
+
+Here, if the `FLASK_ENV` environment variable equals `development`, we created a new admin instance and registered it.
+
+The admin app will only be available in development mode, which we'll write a test for shortly. If you'd like to use it in production, it's recommended to change the URL, to help prevent brute force attacks, and configure proper authentication. Review the example [`here`](https://github.com/flask-admin/flask-admin/tree/master/examples/auth-flask-login) showing how to integrate `Flask-Login` authentication with `Flask-Admin` for more on this.
+
+Next, add a `ModelView` to `project/api/models.py` so that the admin has access to your database models:
+
+```python
+...
+import os
+from flask_admin.contrib.sqla import ModelView
+...
+
+
+if os.getenv("FLASK_ENV") == "development":
+    from project import admin
+    admin.add_view(ModelView(User, db.session))
+```
+
+Update the containers:
+
+```shell script
+docker-compose up -d --build
+```
+
+Navigate to [http://localhost:5000/admin/user/](http://localhost:5000/admin/user/)
+
+Try adding a new user.
+If you have the following error:
+
+```python
+TypeError: __init__() missing 2 required positional arguments: 'username' and 'email'
+```
+
+Turn to the `User` model again. We need to add default arguments to the `__init__` constructor since `Flask-Admin` doesn't know what those arguments look like:
+
+```python
+def __init__(self, username='', email=''):
+    self.username = username
+    self.email = email
+```
+
+### Customizing
+
+Let's make a few changes to the admin.
+
+To start, let's combine all of the user-related functionality together. Create a new package in `api` called `users`. Then add an `__init__.py` file and move the `models.py` and `users.py` files into `users`. Finally, rename `users.py` to `views.py`.
+
+You'll need to update a number of imports.
+
+1. `manage.py`:
+
+    * Change `from project.api.models import User` to `from project.api.users.models import User`.
+
+2. `project/__init__.py`:
+
+    * Change `from project.api.users import users_blueprint` to from `project.api.users.views import users_blueprint`.
+
+3. `project/api/users/views.py`:
+
+    * Change `from project.api.models import User` to `from project.api.users.models import User`.
+
+4. `project/tests/utils.py`:
+
+    * Change `from project.api.models import User` to `from project.api.users.models import User`.
+    
+Once done, make sure [http://localhost:5000/admin/user/](http://localhost:5000/admin/user/) still works.
+
+create a new file in `project/api/users` called `admin.py`:
+
+```python
+from flask_admin.contrib.sqla import ModelView
+
+
+class UsersAdminView(ModelView):
+    pass
+```
+
+Here, we created a new class, `UsersAdminView`, that inherits from `ModelView`. We can use this class to [customize the views](https://flask-admin.readthedocs.io/en/latest/introduction/?highlight=column_searchable_list#customizing-built-in-views) for the `User` model.
+
+Update `project/api/users/models.py`
+
+```python
+import os
+
+from sqlalchemy.sql import func
+
+from project import db
+
+
+class User(db.Model):
+
+    __tablename__ = "users"
+
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    username = db.Column(db.String(128), nullable=False)
+    email = db.Column(db.String(128), nullable=False)
+    active = db.Column(db.Boolean(), default=True, nullable=False)
+    created_date = db.Column(db.DateTime, default=func.now(), nullable=False)
+
+    def __init__(self, username='', email=''):
+        self.username = username
+        self.email = email
+
+    def to_json(self):
+        return {
+            "id": self.id,
+            "username": self.username,
+            "email": self.email,
+            "active": self.active,
+        }
+
+
+if os.getenv("FLASK_ENV") == "development":
+    from project import admin
+    from project.api.users.admin import UsersAdminView
+    admin.add_view(UsersAdminView(User, db.session))
+```
+
+Now we can customize the admin:
+
+```python
+class UsersAdminView(ModelView):
+    column_searchable_list = ('username', 'email',)
+    column_editable_list = ('username', 'email', 'created_date',)
+    column_filters = ('username', 'email',)
+    column_sortable_list = ('username', 'email', 'active', 'created_date',)
+    column_default_sort = ('created_date', True)
+```
+
+We added the following config attributes:
+
+1. `column_searchable_list` - searchable columns
+2. `column_editable_list` - inline editable columns
+3. `column_filters` - columns used to filter
+4. `column_sortable_list` - columns that can be sorted
+5. `column_default_sort` - default sort column (`True` is used for sorting in descending order)
+
+Rebuild
+
+```shell script
+docker-compose up -d --build
+```
+
+And try again [http://localhost:5000/admin/user/](http://localhost:5000/admin/user/)
+
+### Tests
+
+Add a module `test_admin_users` in `project/tests`:
+
+```python
+import os
+
+from project import create_app
+from project.tests.utils import recreate_db
+
+
+def test_admin_view_dev():
+    os.environ["FLASK_ENV"] = "development"
+    assert os.getenv("FLASK_ENV") == "development"
+    app = create_app()
+    app.config.from_object("project.config.TestingConfig")
+    with app.app_context():
+        recreate_db()
+        client = app.test_client()
+        resp = client.get("/admin/user/")
+        assert resp.status_code == 200
+    assert os.getenv("FLASK_ENV") == "development"
+
+
+def test_admin_view_prod():
+    os.environ["FLASK_ENV"] = "production"
+    assert os.getenv("FLASK_ENV") == "production"
+    app = create_app()
+    app.config.from_object("project.config.TestingConfig")
+    with app.app_context():
+        recreate_db()
+        client = app.test_client()
+        resp = client.get("/admin/user/")
+        assert resp.status_code == 404
+    assert os.getenv("FLASK_ENV") == "production"
+```
+
+Ensure the tests pass
+
+```shell script
+docker-compose exec users pytest "project/tests" --cov="project"
+```
+
+Run `flake8`, `Black`, and `isort`
+
+```shell script
+docker-compose exec users flake8 project
+docker-compose exec users black project
+docker-compose exec users /bin/sh -c "isort project/*/*.py"
+```
+
+Update the `test` stage in `.gitlab-ci.yml`, updating the `FLASK_ENV` variable
+
+```yaml
+test:
+  stage: test
+  image: $IMAGE:latest
+  services:
+    - postgres:latest
+  variables:
+    POSTGRES_DB: users
+    POSTGRES_USER: runner
+    POSTGRES_PASSWORD: ""
+    DATABASE_TEST_URL: postgres://runner@postgres:5432/users
+    FLASK_ENV: development
+  script:
+    - pytest "project/tests"
+    - flake8 project
+    - black project --check
+    - isort project/**/*.py --check-only
+```
+
+Now you can triiger a new build in gitlab
