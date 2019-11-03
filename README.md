@@ -1770,6 +1770,7 @@ deploy:
         "."
     - docker login -u _ -p $HEROKU_AUTH_TOKEN registry.heroku.com
     - docker push $HEROKU_REGISTRY_IMAGE
+    - chmod +x ./release.sh
     - ./release.sh
 ```
 
@@ -1795,7 +1796,7 @@ In the `deploy` stage, we:
 2. Build and tag the new image
 3. Log in to the Heroku Container Registry
 4. Push the image up to the registry
-5. Create a new release via the Heroku API using the image ID within the `release.sh` script
+5. Create a new release via the Heroku API using the image ID within the `release.sh` script (Before, we use `chmod +x` to avoid __`permission denied`__)
 
 To test, make a quick change to the `Ping` get route by removing the explanation point ( `!` ):
 
@@ -1811,3 +1812,232 @@ You should see:
   "message": "pong"
 }
 </pre>
+
+## Remaining routes
+
+Endpoint | HTTP Method | CRUD Method | Result
+--- | --- | --- | ---
+/users | GET | READ | get all users
+/users/:id | GET | READ | get a single user
+/users | POST | CREATE | add a user
+/users/:id | PUT | UPDATE | update a user
+/users/:id | DELETE | DELETE | delete a user
+
+### DELETE
+
+Add the following tests to `test_users.py` in `project/tests`:
+
+```python
+def test_remove_user(test_app, test_database):
+    recreate_db()
+    user = add_user("user-to-be-removed", "remove-me@testdriven.io")
+    client = test_app.test_client()
+    resp_one = client.get("/users")
+    data = json.loads(resp_one.data.decode())
+    assert resp_one.status_code == 200
+    assert len(data["data"]["users"]) == 1
+    resp_two = client.delete(f"/users/{user.id}")
+    data = json.loads(resp_two.data.decode())
+    assert resp_two.status_code == 200
+    assert 'remove-me@testdriven.io was removed!' in data['message']
+    assert 'success' in data['status']
+    resp_three = client.get("/users")
+    data = json.loads(resp_three.data.decode())
+    assert resp_three.status_code == 200
+    assert len(data["data"]["users"]) == 0
+
+
+def test_remove_user_incorrect_id(test_app, test_database):
+    client = test_app.test_client()
+    resp = client.delete("/users/999")
+    data = json.loads(resp.data.decode())
+    assert resp.status_code == 404
+    assert "User does not exist" in data["message"]
+    assert "fail" in data["status"]
+```
+
+Run the tests to ensure they both fail
+
+```shell script
+docker-compose exec users pytest "project/tests" 
+```
+
+Then add the route handler to the `Users` class in `project/api/users.py`:
+
+```python
+def delete(self, user_id):
+    response_object = {"status": "fail", "message": "User does not exist"}
+    try:
+        user = User.query.filter_by(id=int(user_id)).first()
+        if not user:
+            return response_object, 404
+        else:
+            db.session.delete(user)
+            db.session.commit()
+            response_object["status"] = "success"
+            response_object["message"] = f"{user.email} was removed!"
+            return response_object, 200
+    except ValueError:
+        return response_object, 404
+```
+
+Ensure the tests pass:
+
+```shell script
+docker-compose exec users pytest "project/tests"
+```
+
+### PUT
+
+Start with some tests:
+
+```python
+def test_update_user(test_app, test_database):
+    user = add_user("user-to-be-updated", "update-me@testdriven.io")
+    client = test_app.test_client()
+    resp_one = client.put(
+        f"/users/{user.id}",
+        data=json.dumps({"username": "me", "email": "me@testdriven.io"}),
+        content_type="application/json",
+    )
+    data = json.loads(resp_one.data.decode())
+    assert resp_one.status_code == 200
+    assert f"{user.id} was updated!" in data["message"]
+    assert "success" in data["status"]
+    resp_two = client.get(f"/users/{user.id}")
+    data = json.loads(resp_two.data.decode())
+    assert resp_two.status_code == 200
+    assert "me" in data["data"]["username"]
+    assert "me@testdriven.io" in data["data"]["email"]
+    assert "success" in data["status"]
+
+
+def test_update_user_invalid_json(test_app, test_database):
+    client = test_app.test_client()
+    resp = client.put(
+        "/users/1",
+        data=json.dumps({}),
+        content_type="application/json",
+    )
+    data = json.loads(resp.data.decode())
+    assert resp.status_code == 400
+    assert "Invalid payload." in data["message"]
+    assert "fail" in data["status"]
+
+
+def test_update_user_invalid_json_keys(test_app, test_database):
+    client = test_app.test_client()
+    resp = client.put(
+        "/users/1",
+        data=json.dumps({"email": "me@testdriven.io"}),
+        content_type="application/json",
+    )
+    data = json.loads(resp.data.decode())
+    assert resp.status_code == 400
+    assert "Invalid payload." in data["message"]
+    assert "fail" in data["status"]
+
+
+def test_update_user_does_not_exist(test_app, test_database):
+    client = test_app.test_client()
+    resp = client.put(
+        "/users/999",
+        data=json.dumps({"username": "me", "email": "me@testdriven.io"}),
+        content_type="application/json",
+    )
+    data = json.loads(resp.data.decode())
+    assert resp.status_code == 404
+    assert "User does not exist" in data["message"]
+    assert "fail" in data["status"]
+```
+
+Ensure the tests fail:
+
+```shell script
+docker-compose exec users pytest "project/tests"
+```
+
+Add the route
+
+```python
+def put(self, user_id):
+    post_data = request.get_json()
+    response_object = {"status": "fail", "message": "Invalid payload."}
+    if not post_data:
+        return response_object, 400
+    username = post_data.get("username")
+    email = post_data.get("email")
+    if not username or not email:
+        return response_object, 400
+    try:
+        user = User.query.filter_by(id=int(user_id)).first()
+        if user:
+            user.username = username
+            user.email = email
+            db.session.commit()
+            response_object["status"] = "success"
+            response_object["message"] = f"{user.id} was updated!"
+            return response_object, 200
+        else:
+            response_object["message"] = "User does not exist."
+            return response_object, 404
+    except exc.IntegrityError:
+        db.session.rollback()
+        return response_object, 400
+```
+
+Now the tests should pass:
+
+```shell script
+docker-compose exec users pytest "project/tests"
+```
+
+### Tests
+
+Now all the tests pass, run `flake8`, `Black`, and `isort`:
+
+```shell script
+docker-compose exec users flake8 project
+docker-compose exec users black project
+docker-compose exec users /bin/sh -c "isort project/*/*.py"
+```
+
+We can trigger a new build by commit and push.
+
+Once the deploy is complete, test all the routes with `HTTPie`
+
+GET all users:
+
+```shell script
+http GET https://vast-refuge-42324.herokuapp.com/users
+``` 
+
+GET single user:
+
+```shell script
+http GET https://vast-refuge-42324.herokuapp.com/users/1
+```
+
+POST:
+
+```shell script
+http --json POST https://vast-refuge-42324.herokuapp.com/users username=someone email=someone@something.com
+```
+
+PUT:
+
+```shell script
+http --json PUT https://vast-refuge-42324.herokuapp.com/users/3 username=foo email=foo@bar.com
+```
+
+DELETE:
+
+```shell script
+http DELETE https://vast-refuge-42324.herokuapp.com/users/4
+```
+
+Finally, test our test coverage
+
+```shell script
+docker-compose exec users pytest "project/tests" --cov="project"
+```
